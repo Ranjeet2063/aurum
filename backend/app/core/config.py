@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     SOROBAN_NETWORK_PASSPHRASE: str = "Test SDF Network ; September 2015"
     CONTRACT_ID: str = ""
 
+    # Fee-sponsoring relayer for passkey smart-wallet transactions (see
+    # app/services/relayer.py). The smart wallet holds no XLM, so this
+    # funded testnet keypair pays fees via a fee-bump transaction. Unset
+    # in production until a funded key is provisioned — the relayer route
+    # rejects requests rather than silently no-op'ing.
+    RELAYER_SECRET_KEY: str = ""
+
     # Oracle sources (see app/services/oracle.py)
     REFLECTOR_CONTRACT_ID: str = ""
     DIA_ORACLE_CONTRACT_ID: str = ""
