@@ -7,13 +7,9 @@ import {
 } from "@/components/ReconciliationCard";
 import { PositionCard } from "@/components/PositionCard";
 import { PositionHistoryChart } from "@/components/PositionHistoryChart";
+import { WalletConnect, type ConnectedWallet } from "@/components/WalletConnect";
 import { reconcilePrice } from "@/lib/api";
-import {
-  checkFreighterInstalled,
-  connectFreighterWallet,
-  getConnectedAddress,
-  shortenAddress,
-} from "@/lib/freighter";
+import { mint, burn } from "@/lib/contract";
 import { getTradingSession } from "@/lib/session";
 import type {
   PositionHistoryPoint,
@@ -82,9 +78,14 @@ function SessionBadge() {
 }
 
 export default function Home() {
-  const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [walletLoading, setWalletLoading] = useState(false);
-  const [walletError, setWalletError] = useState<string | null>(null);
+  const [wallet, setWallet] = useState<ConnectedWallet | null>(null);
+
+  const [collateralAmount, setCollateralAmount] = useState("3000");
+  const [mintAmount, setMintAmount] = useState("1");
+  const [burnAmount, setBurnAmount] = useState("1");
+  const [mintBurnLoading, setMintBurnLoading] = useState(false);
+  const [mintBurnError, setMintBurnError] = useState<string | null>(null);
+  const [mintBurnResult, setMintBurnResult] = useState<string | null>(null);
 
   const [onChainPrice, setOnChainPrice] = useState("2005");
   const [spotPrice, setSpotPrice] = useState("2000");
@@ -94,56 +95,40 @@ export default function Home() {
 
   const liveSpotPrice = parseFloat(spotPrice);
 
-  useEffect(() => {
-    async function hydrateWallet() {
-      const { installed, error: installError } = await checkFreighterInstalled();
-      if (!installed) {
-        setWalletError(installError ?? "Freighter extension not detected");
-        return;
-      }
-
-      const { address, error: addressError } = await getConnectedAddress();
-      if (addressError) {
-        setWalletError(addressError);
-        return;
-      }
-
-      if (address) {
-        setWalletAddress(address);
-      }
+  async function handleMint() {
+    if (!wallet) {
+      setMintBurnError("Connect a wallet first");
+      return;
     }
-
-    hydrateWallet();
-  }, []);
-
-  async function handleConnectWallet() {
-    setWalletLoading(true);
-    setWalletError(null);
-
+    setMintBurnLoading(true);
+    setMintBurnError(null);
+    setMintBurnResult(null);
     try {
-      const { installed, error: installError } = await checkFreighterInstalled();
-      if (!installed) {
-        setWalletError(installError ?? "Install Freighter to continue");
-        return;
-      }
-
-      const { address, error: connectError } = await connectFreighterWallet();
-      if (connectError) {
-        setWalletError(connectError);
-        return;
-      }
-
-      setWalletAddress(address ?? null);
+      const result = await mint(wallet, collateralAmount, mintAmount);
+      setMintBurnResult(`Mint submitted: ${result.hash}`);
     } catch (err) {
-      setWalletError(err instanceof Error ? err.message : "Wallet connection failed");
+      setMintBurnError(err instanceof Error ? err.message : "Mint failed");
     } finally {
-      setWalletLoading(false);
+      setMintBurnLoading(false);
     }
   }
 
-  function handleDisconnectWallet() {
-    setWalletAddress(null);
-    setWalletError(null);
+  async function handleBurn() {
+    if (!wallet) {
+      setMintBurnError("Connect a wallet first");
+      return;
+    }
+    setMintBurnLoading(true);
+    setMintBurnError(null);
+    setMintBurnResult(null);
+    try {
+      const result = await burn(wallet, burnAmount);
+      setMintBurnResult(`Burn submitted: ${result.hash}`);
+    } catch (err) {
+      setMintBurnError(err instanceof Error ? err.message : "Burn failed");
+    } finally {
+      setMintBurnLoading(false);
+    }
   }
 
   async function handleReconcile() {
@@ -183,34 +168,7 @@ export default function Home() {
 
         <div className="flex flex-col items-end gap-3">
           <SessionBadge />
-
-          {walletAddress ? (
-            <div className="flex items-center gap-2">
-              <p className="font-mono text-xs text-muted">
-                {shortenAddress(walletAddress)}
-              </p>
-              <button
-                onClick={handleDisconnectWallet}
-                className="rounded-md border border-line bg-surface px-3 py-1.5 font-display text-xs font-medium text-ink transition-colors hover:border-gold/40"
-              >
-                Disconnect
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handleConnectWallet}
-              disabled={walletLoading}
-              className="rounded-md bg-gold px-3 py-1.5 font-display text-xs font-semibold text-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {walletLoading ? "Connecting…" : "Connect Freighter"}
-            </button>
-          )}
-
-          {walletError && (
-            <p className="max-w-xs text-right font-display text-xs text-critical">
-              {walletError}
-            </p>
-          )}
+          <WalletConnect onWalletChange={setWallet} />
         </div>
       </header>
 
@@ -268,6 +226,79 @@ export default function Home() {
           </section>
         )
       )}
+
+      <section className="mb-6 space-y-4 rounded-xl border border-line bg-surface p-6">
+        <h2 className="font-display text-xs font-medium uppercase tracking-[0.2em] text-muted">
+          Mint / burn sXAU
+        </h2>
+        {!wallet && (
+          <p className="text-xs text-muted">
+            Connect a wallet above (Freighter or passkey) to mint or burn.
+          </p>
+        )}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="collateral" className="mb-1.5 block text-xs text-muted">
+              Collateral to lock (USD)
+            </label>
+            <input
+              id="collateral"
+              value={collateralAmount}
+              onChange={(e) => setCollateralAmount(e.target.value)}
+              inputMode="decimal"
+              className="w-full rounded-md border border-line bg-base px-3 py-2.5 font-mono text-sm tabular-nums text-ink focus:border-gold focus:outline-none"
+            />
+          </div>
+          <div>
+            <label htmlFor="mintAmount" className="mb-1.5 block text-xs text-muted">
+              sXAU to mint
+            </label>
+            <input
+              id="mintAmount"
+              value={mintAmount}
+              onChange={(e) => setMintAmount(e.target.value)}
+              inputMode="decimal"
+              className="w-full rounded-md border border-line bg-base px-3 py-2.5 font-mono text-sm tabular-nums text-ink focus:border-gold focus:outline-none"
+            />
+          </div>
+        </div>
+        <button
+          onClick={handleMint}
+          disabled={mintBurnLoading || !wallet}
+          className="rounded-md bg-gold px-4 py-2.5 font-display text-sm font-semibold text-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {mintBurnLoading ? "Submitting…" : "Mint"}
+        </button>
+
+        <div className="border-t border-line pt-4">
+          <label htmlFor="burnAmount" className="mb-1.5 block text-xs text-muted">
+            sXAU to burn
+          </label>
+          <div className="flex gap-3">
+            <input
+              id="burnAmount"
+              value={burnAmount}
+              onChange={(e) => setBurnAmount(e.target.value)}
+              inputMode="decimal"
+              className="w-full rounded-md border border-line bg-base px-3 py-2.5 font-mono text-sm tabular-nums text-ink focus:border-gold focus:outline-none"
+            />
+            <button
+              onClick={handleBurn}
+              disabled={mintBurnLoading || !wallet}
+              className="shrink-0 rounded-md border border-gold/40 px-4 py-2.5 font-display text-sm font-semibold text-gold transition-colors hover:bg-gold/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {mintBurnLoading ? "Submitting…" : "Burn"}
+            </button>
+          </div>
+        </div>
+
+        {mintBurnError && (
+          <p className="font-display text-sm text-critical">{mintBurnError}</p>
+        )}
+        {mintBurnResult && (
+          <p className="font-mono text-xs text-muted">{mintBurnResult}</p>
+        )}
+      </section>
 
       <section>
         <h2 className="mb-3 font-display text-xs font-medium uppercase tracking-[0.2em] text-muted">
