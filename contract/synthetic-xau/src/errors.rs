@@ -14,4 +14,5 @@ pub enum AurumError {
     NoPosition = 8,
     PositionHealthy = 9,
     DivisionByZero = 10,
+    UnapprovedCollateral = 11,
 }
