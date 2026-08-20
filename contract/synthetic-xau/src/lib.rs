@@ -8,9 +8,10 @@
 //!
 //! ## Model
 //!
-//! - A user locks USDC as collateral and mints `sXAU` against it, up to
-//!   a configured maximum loan-to-value (e.g. 66.6%, i.e. 150% collateral
-//!   ratio).
+//! - A user locks an approved USD-pegged stablecoin (USDC, EURC, MGUSD,
+//!   ...) as collateral and mints `sXAU` against it, up to a configured
+//!   maximum loan-to-value (e.g. 66.6%, i.e. 150% collateral ratio). Every
+//!   approved token is treated as 1:1 USD-pegged — see `Config`.
 //! - The XAU/USD price is supplied by an authorized price-pusher address
 //!   (off-chain, the FastAPI oracle aggregator — see `backend/app/services/oracle.py`)
 //!   rather than read from another contract, to keep this reference
@@ -34,7 +35,7 @@ mod errors;
 mod pricing;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 pub use errors::AurumError;
 pub use types::{Config, Position};
@@ -46,12 +47,14 @@ pub struct SyntheticXau;
 
 #[contractimpl]
 impl SyntheticXau {
-    /// One-time setup. Sets the admin, the collateral token (USDC),
-    /// the price-pusher address, and risk parameters.
+    /// One-time setup. Sets the admin, the list of approved collateral
+    /// tokens (e.g. USDC, EURC, MGUSD — any Stellar asset contract the
+    /// admin trusts as 1:1 USD-pegged), the price-pusher address, and
+    /// risk parameters.
     pub fn initialize(
         env: Env,
         admin: Address,
-        collateral_token: Address,
+        approved_collateral_tokens: Vec<Address>,
         price_pusher: Address,
         min_collateral_ratio_bps: u32,  // e.g. 15000 = 150%
         liquidation_threshold_bps: u32, // e.g. 12000 = 120%
@@ -64,16 +67,41 @@ impl SyntheticXau {
         if liquidation_threshold_bps >= min_collateral_ratio_bps {
             return Err(AurumError::InvalidConfig);
         }
+        if approved_collateral_tokens.is_empty() {
+            return Err(AurumError::InvalidConfig);
+        }
 
         let config = Config {
             admin,
-            collateral_token,
+            approved_collateral_tokens,
             price_pusher,
             min_collateral_ratio_bps,
             liquidation_threshold_bps,
             xau_usd_price: 0,
         };
         types::set_config(&env, &config);
+        Ok(())
+    }
+
+    /// Admin-only. Adds a new token to the approved collateral list post-
+    /// deploy (e.g. MGUSD after it launches). No-ops if the token is
+    /// already approved rather than erroring, so it's safe to call twice.
+    pub fn add_collateral_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), AurumError> {
+        admin.require_auth();
+
+        let mut config = types::get_config(&env).ok_or(AurumError::NotInitialized)?;
+        if admin != config.admin {
+            return Err(AurumError::InvalidConfig);
+        }
+
+        if !config.is_approved_collateral(&token) {
+            config.approved_collateral_tokens.push_back(token);
+            types::set_config(&env, &config);
+        }
         Ok(())
     }
 
@@ -91,12 +119,19 @@ impl SyntheticXau {
         Ok(())
     }
 
-    /// Locks `collateral_amount` of the collateral token and mints
+    /// Locks `collateral_amount` of `collateral_token` (must be on the
+    /// approved list — see `initialize`/`add_collateral_token`) and mints
     /// `mint_amount` of sXAU, provided the resulting position stays at
     /// or above `min_collateral_ratio_bps`.
+    ///
+    /// All approved collateral tokens are treated as 1:1 USD-pegged and
+    /// `Position` doesn't record which token(s) contributed to its
+    /// `collateral` total — see the "known simplifications" section of
+    /// `contract/README.md` for what that means for `burn`/`liquidate`.
     pub fn mint(
         env: Env,
         user: Address,
+        collateral_token: Address,
         collateral_amount: i128,
         mint_amount: i128,
     ) -> Result<(), AurumError> {
@@ -105,6 +140,9 @@ impl SyntheticXau {
         let config = types::get_config(&env).ok_or(AurumError::NotInitialized)?;
         if config.xau_usd_price == 0 {
             return Err(AurumError::PriceNotSet);
+        }
+        if !config.is_approved_collateral(&collateral_token) {
+            return Err(AurumError::UnapprovedCollateral);
         }
         if collateral_amount <= 0 || mint_amount <= 0 {
             return Err(AurumError::InvalidAmount);
@@ -125,7 +163,7 @@ impl SyntheticXau {
         }
 
         // Pull collateral token from the user into the contract.
-        let collateral_client = token::Client::new(&env, &config.collateral_token);
+        let collateral_client = token::Client::new(&env, &collateral_token);
         collateral_client.transfer(&user, &env.current_contract_address(), &collateral_amount);
 
         position.collateral = new_collateral;
@@ -136,11 +174,27 @@ impl SyntheticXau {
     }
 
     /// Burns `burn_amount` of sXAU debt and releases a proportional share
-    /// of locked collateral back to the user.
-    pub fn burn(env: Env, user: Address, burn_amount: i128) -> Result<(), AurumError> {
+    /// of locked collateral back to the user, paid out in
+    /// `collateral_token`.
+    ///
+    /// NOTE: since `Position` doesn't track which approved token(s) were
+    /// actually locked (see `mint`), the caller chooses which token to be
+    /// paid out in, and the contract only checks that it's on the
+    /// approved list — not that it matches what this position actually
+    /// deposited. This is a known simplification for positions that mix
+    /// collateral tokens; see `contract/README.md`.
+    pub fn burn(
+        env: Env,
+        user: Address,
+        collateral_token: Address,
+        burn_amount: i128,
+    ) -> Result<(), AurumError> {
         user.require_auth();
 
         let config = types::get_config(&env).ok_or(AurumError::NotInitialized)?;
+        if !config.is_approved_collateral(&collateral_token) {
+            return Err(AurumError::UnapprovedCollateral);
+        }
         let mut position = types::get_position(&env, &user).ok_or(AurumError::NoPosition)?;
 
         if burn_amount <= 0 || burn_amount > position.debt_xau {
@@ -154,7 +208,7 @@ impl SyntheticXau {
         position.collateral -= collateral_release;
         types::set_position(&env, &user, &position);
 
-        let collateral_client = token::Client::new(&env, &config.collateral_token);
+        let collateral_client = token::Client::new(&env, &collateral_token);
         collateral_client.transfer(&env.current_contract_address(), &user, &collateral_release);
 
         Ok(())
@@ -198,10 +252,14 @@ impl SyntheticXau {
         env: Env,
         liquidator: Address,
         target_user: Address,
+        collateral_token: Address,
     ) -> Result<(), AurumError> {
         liquidator.require_auth();
 
         let config = types::get_config(&env).ok_or(AurumError::NotInitialized)?;
+        if !config.is_approved_collateral(&collateral_token) {
+            return Err(AurumError::UnapprovedCollateral);
+        }
         let position = types::get_position(&env, &target_user).ok_or(AurumError::NoPosition)?;
 
         let ratio_bps = pricing::collateral_ratio_bps(
@@ -221,7 +279,7 @@ impl SyntheticXau {
         // via a separate debt-token burn step. This simplification is
         // explicitly flagged as a known gap, not hidden:
         // see docs/risks.md and the open "partial liquidation" issue.
-        let collateral_client = token::Client::new(&env, &config.collateral_token);
+        let collateral_client = token::Client::new(&env, &collateral_token);
         collateral_client.transfer(
             &env.current_contract_address(),
             &liquidator,

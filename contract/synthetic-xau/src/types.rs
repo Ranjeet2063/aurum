@@ -1,14 +1,25 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 #[derive(Clone)]
 #[contracttype]
 pub struct Config {
     pub admin: Address,
-    pub collateral_token: Address,
+    // Any Stellar asset contract on this list can be locked as collateral,
+    // e.g. USDC, EURC, MGUSD. All approved tokens are treated as 1:1
+    // USD-pegged — there is no per-token price feed (see
+    // `pricing::collateral_ratio_bps` and the "known simplifications"
+    // section of `contract/README.md`).
+    pub approved_collateral_tokens: Vec<Address>,
     pub price_pusher: Address,
     pub min_collateral_ratio_bps: u32,
     pub liquidation_threshold_bps: u32,
     pub xau_usd_price: i128, // scaled by SCALAR (10^7)
+}
+
+impl Config {
+    pub fn is_approved_collateral(&self, token: &Address) -> bool {
+        self.approved_collateral_tokens.iter().any(|t| t == *token)
+    }
 }
 
 #[derive(Clone)]
