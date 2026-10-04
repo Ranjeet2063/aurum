@@ -16,6 +16,19 @@ from app.models.position import PositionSummary
 router = APIRouter()
 
 _POSITIONS: dict[str, PositionSummary] = {}
+_POSITION_NETWORKS: dict[str, str] = {}
+
+
+@router.get("/", response_model=list[PositionSummary])
+async def list_positions(network: str | None = None) -> list[PositionSummary]:
+    """List all currently tracked positions, optionally filtered by network."""
+    if network is None:
+        return list(_POSITIONS.values())
+    return [
+        pos
+        for address, pos in _POSITIONS.items()
+        if _POSITION_NETWORKS.get(address, "testnet") == network
+    ]
 
 
 @router.get("/{address}", response_model=PositionSummary)
@@ -29,9 +42,12 @@ async def get_position(address: str) -> PositionSummary:
 
 
 @router.post("/", response_model=PositionSummary, status_code=201)
-async def upsert_position_placeholder(payload: PositionSummary) -> PositionSummary:
+async def upsert_position_placeholder(
+    payload: PositionSummary, network: str = "testnet"
+) -> PositionSummary:
     """Temporary write path for local/demo use while live RPC reads are
     not yet wired up. This will be removed once positions are read
     directly from chain instead of being client-supplied."""
     _POSITIONS[payload.address] = payload
+    _POSITION_NETWORKS[payload.address] = network
     return payload
