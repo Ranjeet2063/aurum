@@ -37,3 +37,14 @@ class ReconciliationReport(BaseModel):
     deviation_exceeds_threshold: bool
     trading_session: TradingSession
     checked_at: str
+
+
+class PriceHistoryRecord(BaseModel):
+    id: int | str | None = None
+    on_chain_price_usd: float
+    spot_price_usd: float
+    deviation_bps: float
+    trading_session: str
+    recorded_at: str
+
+    model_config = {"extra": "ignore"}

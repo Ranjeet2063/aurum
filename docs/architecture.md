@@ -16,6 +16,8 @@ Aurum has three pieces:
      Reflector (SEP-40 `lastprice`) and DIA (`get_value`) Soroban oracle
      contracts and constructs the `PriceQuote` objects `oracle.py`
      consumes.
+   - `app/services/repository.py` — Supabase persistence layer for
+     reconciliation history snapshots (`price_history` table).
    - `app/services/sessions.py` — trading session detection (Asia /
      London / New York) used to add context to deviation readings.
    - `app/api/routes/` — `/pricing`, `/positions`, `/health`.
@@ -39,9 +41,42 @@ oracle.reconcile_with_spot()
   - flags if above DEVIATION_ALERT_THRESHOLD_BPS
   - tags the current trading session (sessions.py)
         │
-        ▼
-ReconciliationReport → ReconciliationCard renders it
+        ├─────────────────────────────────────────┐
+        ▼                                         ▼
+ReconciliationReport                     repository.record_price()
+        │                                         │
+        ▼                                         ▼
+ReconciliationCard renders it            Supabase price_history table
 ```
+
+## Price history persistence (Supabase)
+
+Spot-reconciliation checks are persisted to Supabase to power historical
+deviation charts on the dashboard.
+
+### Schema (`price_history`)
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `bigint` | `generated always as identity primary key` | Unique row identifier |
+| `on_chain_price_usd` | `double precision` | `not null` | Aggregated on-chain price (USD) |
+| `spot_price_usd` | `double precision` | `not null` | Reference spot price (USD) |
+| `deviation_bps` | `double precision` | `not null` | Absolute price deviation in basis points |
+| `trading_session` | `text` | `not null` | Trading session (`asia`, `london`, `new_york`, `off_hours`) |
+| `recorded_at` | `timestamptz` | `not null default timezone('utc'::text, now())` | Snapshot timestamp (UTC) |
+
+Indexed on `recorded_at desc` (`idx_price_history_recorded_at_desc`) for
+efficient chronological retrieval.
+
+Migration SQL is located in `supabase/migrations/20261004000000_create_price_history.sql`.
+
+### Endpoints
+
+- `POST /pricing/reconcile` — computes deviation against spot and inserts
+  a new snapshot into `price_history`.
+- `GET /pricing/history?limit=100` — retrieves historical records ordered
+  by `recorded_at` descending.
+
 
 ## Oracle aggregation
 
