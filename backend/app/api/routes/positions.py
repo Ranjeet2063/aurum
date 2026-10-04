@@ -31,6 +31,17 @@ async def list_positions(network: str | None = None) -> list[PositionSummary]:
     ]
 
 
+@router.get("/", response_model=list[PositionSummary])
+async def list_positions(network: str | None = None) -> list[PositionSummary]:
+    """List all currently tracked positions with optional network filtering."""
+    positions = list(_POSITIONS.values())
+    if network is not None:
+        positions = [
+            p for p in positions if getattr(p, "network", "testnet") == network
+        ]
+    return positions
+
+
 @router.get("/{address}", response_model=PositionSummary)
 async def get_position(address: str) -> PositionSummary:
     position = _POSITIONS.get(address)
