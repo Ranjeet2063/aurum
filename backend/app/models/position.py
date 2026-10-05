@@ -17,4 +17,3 @@ class PositionSummary(BaseModel):
         default="testnet",
         description="Network the position belongs to (e.g. testnet, mainnet).",
     )
-
